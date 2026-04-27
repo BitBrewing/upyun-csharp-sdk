@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Upyun", "Upyun\Upyun.csproj", "{641A841B-F328-4520-83A7-2BD945B05A5F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Upyun.Test", "Upyun.Test\Upyun.Test.csproj", "{5266850D-1D66-440E-92ED-42D22085232C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{641A841B-F328-4520-83A7-2BD945B05A5F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{641A841B-F328-4520-83A7-2BD945B05A5F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{641A841B-F328-4520-83A7-2BD945B05A5F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{641A841B-F328-4520-83A7-2BD945B05A5F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5266850D-1D66-440E-92ED-42D22085232C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5266850D-1D66-440E-92ED-42D22085232C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5266850D-1D66-440E-92ED-42D22085232C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5266850D-1D66-440E-92ED-42D22085232C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
