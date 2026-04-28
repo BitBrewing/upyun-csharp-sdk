@@ -122,18 +122,21 @@ await client.UploadFileAsync(
     contentType: "image/png");
 ```
 
-上传字节数组并附加自定义 Header：
+上传字节数组并附加文件元信息：
 
 ```csharp
 await client.UploadFileAsync(
     path: "/docs/readme.txt",
     content: System.Text.Encoding.UTF8.GetBytes("hello"),
     contentType: "text/plain",
-    headers: new Dictionary<string, string>
+    metadata: new Dictionary<string, string>
     {
-        { "x-upyun-meta-source", "sdk" }
-    });
+        { "source", "sdk" }
+    },
+    ttl: 30);
 ```
+
+`metadata` 中的键名会自动添加 `x-upyun-meta-` 前缀；`ttl` 请通过单独参数传入，不要放在 `metadata` 中。`ttl` 单位为天，最大支持 180 天。
 
 上传流：
 
@@ -199,12 +202,20 @@ await client.DeleteDirectoryAsync("/docs/empty-folder");
 ```csharp
 using Upyun.Models;
 
-UpyunFileInfo info = await client.GetFileInfoAsync("/docs/readme.txt");
+UpyunFileSystem info = await client.GetFileInfoAsync("/docs/readme.txt");
 
-Console.WriteLine(info.Type);              // file 或 folder
-Console.WriteLine(info.Size);              // 文件大小，单位：字节
-Console.WriteLine(info.CreatedAtUnixTime); // 秒级 Unix 时间戳
-Console.WriteLine(info.ContentMd5);
+if (info is UpyunFile file)
+{
+    Console.WriteLine(file.Type);
+    Console.WriteLine(file.Length);
+    Console.WriteLine(file.LastModifiedTime);
+    Console.WriteLine(file.ContentMd5);
+}
+else if (info is UpyunDirectory directory)
+{
+    Console.WriteLine(directory.Name);
+    Console.WriteLine(directory.LastModifiedTime);
+}
 ```
 
 分页列出目录：

@@ -42,22 +42,22 @@ public sealed class UpyunClientTests
 
             _output.WriteLine($"正在获取目录信息：{directoryPath}...");
             var directoryInfo = await client.GetFileInfoAsync(directoryPath);
-            Assert.Equal("folder", directoryInfo.Type);
+            Assert.IsType<UpyunDirectory>(directoryInfo);
 
             _output.WriteLine($"正在上传文件：{sourcePath}...");
             await client.UploadFileAsync(
                 sourcePath,
                 content,
                 "text/plain",
-                headers: new Dictionary<string, string>
+                metadata: new Dictionary<string, string>
                 {
-                    { "x-upyun-meta-sdk-test", testId }
+                    { "sdk-test", testId }
                 });
 
             _output.WriteLine($"正在获取文件信息：{sourcePath}...");
             var fileInfo = await client.GetFileInfoAsync(sourcePath);
-            Assert.Equal("file", fileInfo.Type);
-            Assert.Equal(content.Length, fileInfo.Size);
+            var sourceFileInfo = Assert.IsType<UpyunFile>(fileInfo);
+            Assert.Equal(content.Length, sourceFileInfo.Length);
 
             _output.WriteLine($"正在下载文件到字节数组：{sourcePath}...");
             var downloaded = await client.DownloadFileAsync(sourcePath);
@@ -149,7 +149,24 @@ public sealed class UpyunClientTests
         try
         {
             _output.WriteLine($"正在递归清理目录：{path}...");
-            await DeleteDirectoryContentsAsync(client, path);
+
+            await client.EnumerateDirectoryAsync(
+                path,
+                async (itemPath, item) =>
+                {
+                    if (item is UpyunDirectory)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1));
+                        await client.DeleteDirectoryAsync(itemPath);
+                        _output.WriteLine($"已删除子目录：{itemPath}");
+                    }
+                    else
+                    {
+                        await client.DeleteFileAsync(itemPath);
+                        _output.WriteLine($"已删除文件：{itemPath}");
+                    }
+                },
+                limit: 100);
 
             await Task.Delay(TimeSpan.FromSeconds(1));
             await client.DeleteDirectoryAsync(path);
@@ -164,48 +181,5 @@ public sealed class UpyunClientTests
             // 兜底清理不参与测试断言，避免掩盖主流程失败原因。
             _output.WriteLine($"递归清理目录失败，已忽略：{path}");
         }
-    }
-
-    private async Task DeleteDirectoryContentsAsync(UpyunClient client, string directoryPath)
-    {
-        var iter = (string?)null;
-        var isEnd = false;
-
-        do
-        {
-            var directoryList = await client.GetDirectoryListAsync(directoryPath, iter: iter, limit: 100);
-
-            foreach (var item in directoryList.Files)
-            {
-                var itemPath = CombineRemotePath(directoryPath, item.Name);
-                if (item is UpyunDirectory)
-                {
-                    await DeleteDirectoryContentsAsync(client, itemPath);
-
-                    await Task.Delay(TimeSpan.FromSeconds(1));
-                    await client.DeleteDirectoryAsync(itemPath);
-                    _output.WriteLine($"已删除子目录：{itemPath}");
-                }
-                else
-                {
-                    await client.DeleteFileAsync(itemPath);
-                    _output.WriteLine($"已删除文件：{itemPath}");
-                }
-            }
-
-            iter = directoryList.Iter;
-            isEnd = directoryList.IsEnd || string.IsNullOrEmpty(iter);
-        }
-        while (!isEnd);
-    }
-
-    private static string CombineRemotePath(string directoryPath, string name)
-    {
-        if (string.IsNullOrEmpty(directoryPath) || directoryPath == "/")
-        {
-            return "/" + name.Trim('/');
-        }
-
-        return directoryPath.TrimEnd('/') + "/" + name.Trim('/');
     }
 }

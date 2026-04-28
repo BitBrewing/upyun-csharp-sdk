@@ -128,17 +128,21 @@ namespace Upyun
         /// <param name="content">要上传的字节内容。</param>
         /// <param name="contentType">可选的文件类型请求头。</param>
         /// <param name="contentMd5">可选的 Content-MD5 请求头值。</param>
-        /// <param name="headers">额外请求头，例如文件元信息或图片预处理参数。</param>
+        /// <param name="metadata">可选的文件元信息，键名会自动添加 x-upyun-meta- 前缀。</param>
+        /// <param name="ttl">可选的文件生存时间，单位为天，最大支持 180 天。</param>
         /// <param name="cancellationToken">用于取消操作的令牌。</param>
         /// <returns>表示异步上传操作的任务。</returns>
         /// <exception cref="ArgumentNullException">当 <paramref name="content"/> 为 <see langword="null"/> 时抛出。</exception>
+        /// <exception cref="ArgumentException">当 <paramref name="metadata"/> 包含 ttl 元信息时抛出。</exception>
+        /// <exception cref="ArgumentOutOfRangeException">当 <paramref name="ttl"/> 超出支持范围时抛出。</exception>
         /// <exception cref="UpyunException">当又拍云返回非成功响应时抛出。</exception>
         public Task UploadFileAsync(
             string path,
             byte[] content,
             string contentType = null,
             string contentMd5 = null,
-            IDictionary<string, string> headers = null,
+            IDictionary<string, string> metadata = null,
+            int? ttl = null,
             CancellationToken cancellationToken = default(CancellationToken))
         {
             if (content == null)
@@ -152,7 +156,7 @@ namespace Upyun
                 content.Length,
                 contentType,
                 contentMd5,
-                headers,
+                BuildMetadataHeaders(metadata, ttl),
                 cancellationToken);
         }
 
@@ -354,7 +358,7 @@ namespace Upyun
         /// <param name="cancellationToken">用于取消操作的令牌。</param>
         /// <returns>又拍云响应头中返回的文件或目录信息。</returns>
         /// <exception cref="UpyunException">当又拍云返回非成功响应时抛出。</exception>
-        public async Task<UpyunFileInfo> GetFileInfoAsync(
+        public async Task<UpyunFileSystem> GetFileInfoAsync(
             string path,
             CancellationToken cancellationToken = default(CancellationToken))
         {
@@ -369,13 +373,13 @@ namespace Upyun
             {
                 await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-                return new UpyunFileInfo
-                {
-                    Type = GetHeaderValue(response, "x-upyun-file-type"),
-                    Size = ParseLongHeader(response, "x-upyun-file-size"),
-                    CreatedAtUnixTime = ParseLongHeader(response, "x-upyun-file-date"),
-                    ContentMd5 = GetHeaderValue(response, "Content-Md5")
-                };
+                return CreateFileSystemItem(
+                    GetFileName(path),
+                    GetHeaderValue(response, "x-upyun-file-type"),
+                    GetHeaderValue(response, "Content-Type"),
+                    ParseLongHeader(response, "x-upyun-file-size"),
+                    ParseLongHeader(response, "x-upyun-file-date"),
+                    GetHeaderValue(response, "Content-Md5"));
             }
         }
 
@@ -630,6 +634,71 @@ namespace Upyun
             request.Headers.TryAddWithoutValidation(name, value);
         }
 
+        private static IDictionary<string, string> BuildMetadataHeaders(
+            IDictionary<string, string> metadata,
+            int? ttl)
+        {
+            Dictionary<string, string> headers = null;
+
+            if (metadata != null)
+            {
+                foreach (KeyValuePair<string, string> item in metadata)
+                {
+                    string metadataKey = NormalizeMetadataKey(item.Key);
+                    if (string.Equals(metadataKey, "ttl", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new ArgumentException("TTL metadata must be set through the ttl parameter.", nameof(metadata));
+                    }
+
+                    if (headers == null)
+                    {
+                        headers = new Dictionary<string, string>();
+                    }
+
+                    headers["x-upyun-meta-" + metadataKey] = item.Value;
+                }
+            }
+
+            if (ttl.HasValue)
+            {
+                if (ttl.Value <= 0 || ttl.Value > 180)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(ttl), "TTL must be between 1 and 180 days.");
+                }
+
+                if (headers == null)
+                {
+                    headers = new Dictionary<string, string>();
+                }
+
+                headers["x-upyun-meta-ttl"] = ttl.Value.ToString(CultureInfo.InvariantCulture);
+            }
+
+            return headers;
+        }
+
+        private static string NormalizeMetadataKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                throw new ArgumentException("Metadata key cannot be empty.", nameof(key));
+            }
+
+            const string metadataPrefix = "x-upyun-meta-";
+            string normalizedKey = key.Trim();
+            if (normalizedKey.StartsWith(metadataPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                normalizedKey = normalizedKey.Substring(metadataPrefix.Length);
+            }
+
+            if (string.IsNullOrWhiteSpace(normalizedKey))
+            {
+                throw new ArgumentException("Metadata key cannot be empty.", nameof(key));
+            }
+
+            return normalizedKey;
+        }
+
         private string BuildAuthorization(string method, string requestPath, string date, long contentLength)
         {
             string signatureSource = string.Join(
@@ -685,6 +754,18 @@ namespace Upyun
             }
 
             return path.Trim('/');
+        }
+
+        private static string GetFileName(string path)
+        {
+            string normalizedPath = NormalizeObjectPath(path);
+            if (string.IsNullOrEmpty(normalizedPath))
+            {
+                return string.Empty;
+            }
+
+            int separatorIndex = normalizedPath.LastIndexOf('/');
+            return separatorIndex < 0 ? normalizedPath : normalizedPath.Substring(separatorIndex + 1);
         }
 
         private static string EncodePath(string path)
@@ -751,23 +832,34 @@ namespace Upyun
         private static UpyunFileSystem CreateFileSystemItem(JsonElement item)
         {
             string type = GetJsonString(item, "type");
-            UpyunFileSystem fileSystem;
+            return CreateFileSystemItem(
+                GetJsonString(item, "name"),
+                type,
+                type,
+                GetJsonInt64(item, "length"),
+                GetJsonInt64(item, "last_modified"),
+                GetJsonString(item, "etag"));
+        }
 
-            if (string.Equals(type, "folder", StringComparison.OrdinalIgnoreCase))
-            {
-                fileSystem = new UpyunDirectory();
-            }
-            else
-            {
-                fileSystem = new UpyunFile
+        private static UpyunFileSystem CreateFileSystemItem(
+            string name,
+            string fileType,
+            string contentType,
+            long length,
+            long lastModifiedUnixTime,
+            string contentMd5)
+        {
+            UpyunFileSystem fileSystem = string.Equals(fileType, "folder", StringComparison.OrdinalIgnoreCase)
+                ? (UpyunFileSystem)new UpyunDirectory()
+                : new UpyunFile
                 {
-                    Type = type,
-                    Length = GetJsonInt64(item, "length")
+                    Type = contentType,
+                    Length = length,
+                    ContentMd5 = contentMd5
                 };
-            }
 
-            fileSystem.Name = GetJsonString(item, "name");
-            fileSystem.LastModifiedTime = DateTimeOffset.FromUnixTimeSeconds(GetJsonInt64(item, "last_modified"));
+            fileSystem.Name = name;
+            fileSystem.LastModifiedTime = DateTimeOffset.FromUnixTimeSeconds(lastModifiedUnixTime);
             return fileSystem;
         }
 

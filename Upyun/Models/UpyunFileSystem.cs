@@ -3,7 +3,7 @@ using System;
 namespace Upyun.Models
 {
     /// <summary>
-    /// 表示又拍云目录列表中的文件系统条目。
+    /// 表示又拍云文件系统条目。
     /// </summary>
     public abstract class UpyunFileSystem
     {

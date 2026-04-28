@@ -1,7 +1,7 @@
 namespace Upyun.Models
 {
     /// <summary>
-    /// 表示又拍云目录列表中的文件条目。
+    /// 表示又拍云文件条目。
     /// </summary>
     public sealed class UpyunFile : UpyunFileSystem
     {
@@ -14,5 +14,10 @@ namespace Upyun.Models
         /// 获取或设置文件大小，单位为字节。
         /// </summary>
         public long Length { get; set; }
+
+        /// <summary>
+        /// 获取或设置文件 Content-MD5 值。
+        /// </summary>
+        public string ContentMd5 { get; set; }
     }
 }
