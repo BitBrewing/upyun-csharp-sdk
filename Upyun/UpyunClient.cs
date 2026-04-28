@@ -318,6 +318,19 @@ namespace Upyun
         }
 
         /// <summary>
+        /// 删除又拍云空目录。
+        /// </summary>
+        /// <param name="path">要删除的目录路径。</param>
+        /// <param name="cancellationToken">用于取消操作的令牌。</param>
+        /// <returns>表示异步删除目录操作的任务。</returns>
+        /// <exception cref="UpyunException">当又拍云返回非成功响应时抛出。</exception>
+        /// <remarks>又拍云只允许删除空目录，非空目录会返回错误。</remarks>
+        public Task DeleteDirectoryAsync(string path, CancellationToken cancellationToken = default(CancellationToken))
+        {
+            return SendNoBodyRequestAsync(HttpMethod.Delete, path, null, null, cancellationToken);
+        }
+
+        /// <summary>
         /// 在又拍云创建目录。
         /// </summary>
         /// <param name="path">要创建的目录路径。</param>
@@ -722,13 +735,7 @@ namespace Upyun
                     {
                         foreach (JsonElement item in filesElement.EnumerateArray())
                         {
-                            result.Files.Add(new UpyunDirectoryItem
-                            {
-                                Name = GetJsonString(item, "name"),
-                                Type = GetJsonString(item, "type"),
-                                Length = GetJsonInt64(item, "length"),
-                                LastModifiedUnixTime = GetJsonInt64(item, "last_modified")
-                            });
+                            result.Files.Add(CreateFileSystemItem(item));
                         }
                     }
 
@@ -739,6 +746,29 @@ namespace Upyun
             {
                 throw new UpyunException("Failed to parse directory list response.", exception);
             }
+        }
+
+        private static UpyunFileSystem CreateFileSystemItem(JsonElement item)
+        {
+            string type = GetJsonString(item, "type");
+            UpyunFileSystem fileSystem;
+
+            if (string.Equals(type, "folder", StringComparison.OrdinalIgnoreCase))
+            {
+                fileSystem = new UpyunDirectory();
+            }
+            else
+            {
+                fileSystem = new UpyunFile
+                {
+                    Type = type,
+                    Length = GetJsonInt64(item, "length")
+                };
+            }
+
+            fileSystem.Name = GetJsonString(item, "name");
+            fileSystem.LastModifiedTime = DateTimeOffset.FromUnixTimeSeconds(GetJsonInt64(item, "last_modified"));
+            return fileSystem;
         }
 
         private static string GetJsonString(JsonElement element, string propertyName)

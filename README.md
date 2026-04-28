@@ -186,6 +186,14 @@ await client.DeleteFileAsync("/docs/readme-moved.txt");
 await client.CreateDirectoryAsync("/docs");
 ```
 
+删除空目录：
+
+```csharp
+await client.DeleteDirectoryAsync("/docs/empty-folder");
+```
+
+又拍云只允许删除空目录，非空目录需要先删除里面的文件或子目录。
+
 获取文件或目录信息：
 
 ```csharp
@@ -215,9 +223,16 @@ do
         limit: 100,
         order: UpyunListOrder.Asc);
 
-    foreach (UpyunDirectoryItem item in list.Files)
+    foreach (UpyunFileSystem item in list.Files)
     {
-        Console.WriteLine($"{item.Type}\t{item.Length}\t{item.Name}");
+        if (item is UpyunDirectory directory)
+        {
+            Console.WriteLine($"DIR\t{directory.LastModifiedTime:O}\t{directory.Name}");
+        }
+        else if (item is UpyunFile file)
+        {
+            Console.WriteLine($"FILE\t{file.Type}\t{file.Length}\t{file.LastModifiedTime:O}\t{file.Name}");
+        }
     }
 
     iter = list.Iter;

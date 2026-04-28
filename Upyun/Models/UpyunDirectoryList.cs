@@ -12,13 +12,13 @@ namespace Upyun.Models
         /// </summary>
         public UpyunDirectoryList()
         {
-            Files = new List<UpyunDirectoryItem>();
+            Files = new List<UpyunFileSystem>();
         }
 
         /// <summary>
         /// 获取当前分页中的文件和目录。
         /// </summary>
-        public IList<UpyunDirectoryItem> Files { get; private set; }
+        public IList<UpyunFileSystem> Files { get; private set; }
 
         /// <summary>
         /// 获取或设置下一次请求使用的分页迭代值。
