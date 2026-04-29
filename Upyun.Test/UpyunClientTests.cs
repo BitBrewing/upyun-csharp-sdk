@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Configuration;
 using System.Net;
-using System.Text;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Upyun.Models;
 using Xunit.Abstractions;
 
@@ -9,8 +11,7 @@ namespace Upyun.Test;
 public sealed class UpyunClientTests
 {
     private const string Endpoint = "https://v0.api.upyun.com";
-    // 测试结束会递归删除该目录及其所有内容，请不要改为根目录。
-    private const string TestRoot = "/upyun-sdk-tests";
+    private const string TestRoot = "/";
     private static readonly Lazy<IConfigurationRoot> Secrets = new(CreateConfiguration);
     private readonly ITestOutputHelper _output;
 
@@ -24,19 +25,17 @@ public sealed class UpyunClientTests
     {
         _output.WriteLine("正在读取测试配置...");
         var client = CreateClient();
-        var testId = Guid.NewGuid().ToString("N");
-        var directoryPath = $"{TestRoot}/{testId}";
-        var sourcePath = $"{directoryPath}/source.txt";
-        var copiedPath = $"{directoryPath}/copied.txt";
-        var movedPath = $"{directoryPath}/moved.txt";
+        var testId = $"upyun-sdk-test-{Guid.NewGuid():N}";
+        var directoryPath = CombineRemotePath(TestRoot, testId);
+        var sourcePath = $"{directoryPath}/source.png";
+        var copiedPath = $"{directoryPath}/copied.png";
+        var movedPath = $"{directoryPath}/moved.png";
         var missingPath = $"{directoryPath}/missing.txt";
-        var content = Encoding.UTF8.GetBytes($"hello upyun sdk {testId}");
+        var content = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
 
         try
         {
-            _output.WriteLine($"正在创建测试根目录：{TestRoot}...");
-            await client.CreateDirectoryAsync(TestRoot);
-
             _output.WriteLine($"正在创建测试目录：{directoryPath}...");
             await client.CreateDirectoryAsync(directoryPath);
 
@@ -48,7 +47,6 @@ public sealed class UpyunClientTests
             await client.UploadFileAsync(
                 sourcePath,
                 content,
-                "text/plain",
                 metadata: new Dictionary<string, string>
                 {
                     { "sdk-test", testId }
@@ -57,6 +55,7 @@ public sealed class UpyunClientTests
             _output.WriteLine($"正在获取文件信息：{sourcePath}...");
             var fileInfo = await client.GetFileInfoAsync(sourcePath);
             var sourceFileInfo = Assert.IsType<UpyunFile>(fileInfo);
+            Assert.Equal("image/png", sourceFileInfo.Type);
             Assert.Equal(content.Length, sourceFileInfo.Length);
 
             _output.WriteLine($"正在下载文件到字节数组：{sourcePath}...");
@@ -87,8 +86,8 @@ public sealed class UpyunClientTests
 
             _output.WriteLine($"正在获取目录文件列表：{directoryPath}...");
             var directoryList = await client.GetDirectoryListAsync(directoryPath, limit: 100);
-            Assert.Contains(directoryList.Files, item => item.Name == "copied.txt");
-            Assert.Contains(directoryList.Files, item => item.Name == "moved.txt");
+            Assert.Contains(directoryList.Files, item => item.Name == "copied.png");
+            Assert.Contains(directoryList.Files, item => item.Name == "moved.png");
 
             _output.WriteLine("正在获取服务使用量...");
             var usage = await client.GetUsageAsync();
@@ -107,13 +106,55 @@ public sealed class UpyunClientTests
             await Task.Delay(TimeSpan.FromSeconds(1));
             await client.DeleteFileAsync(copiedPath);
 
-            _output.WriteLine($"正在删除测试目录：{directoryPath}...");
-            await Task.Delay(TimeSpan.FromSeconds(1));
-            await client.DeleteDirectoryAsync(directoryPath);
         }
         finally
         {
-            await DeleteDirectoryTreeIfExistsAsync(client, TestRoot);
+            await DeleteDirectoryTreeIfExistsAsync(client, directoryPath);
+        }
+    }
+
+    [Fact]
+    public async Task FormApi_UploadImage_WithGeneratedAuthorization_WorksInRealEnvironment()
+    {
+        _output.WriteLine("正在读取测试配置...");
+        var client = CreateClient();
+        var testId = $"upyun-form-test-{Guid.NewGuid():N}";
+        var directoryPath = CombineRemotePath(TestRoot, testId);
+        var content = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
+        var fileMd5 = ComputeMd5Hex(content);
+        var remotePath = CombineRemotePath(directoryPath, $"{fileMd5.Substring(0, 1)}/{fileMd5}.png");
+        var uploadAuthorization = client.GenerateFormUploadAuthorization(remotePath, TimeSpan.FromHours(1));
+
+        try
+        {
+            using var httpClient = new HttpClient();
+            using var form = new MultipartFormDataContent();
+            using var fileContent = new ByteArrayContent(content);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+            form.Add(fileContent, "file", "source.png");
+            form.Add(new StringContent(uploadAuthorization.Policy), "policy");
+            form.Add(new StringContent(uploadAuthorization.Authorization), "authorization");
+
+            _output.WriteLine($"正在通过 Form API 上传图片：{remotePath}...");
+            using var response = await httpClient.PostAsync(uploadAuthorization.UploadUrl, form);
+            var responseContent = await response.Content.ReadAsStringAsync();
+            response.EnsureSuccessStatusCode();
+
+            using var document = JsonDocument.Parse(responseContent);
+            var root = document.RootElement;
+            Assert.Equal(200, root.GetProperty("code").GetInt32());
+            Assert.Equal(remotePath, root.GetProperty("url").GetString());
+            Assert.Equal(content.Length, root.GetProperty("file_size").GetInt64());
+            Assert.Equal("image/png", root.GetProperty("mimetype").GetString());
+
+            _output.WriteLine($"正在下载 Form API 上传后的图片：{remotePath}...");
+            var downloaded = await client.DownloadFileAsync(remotePath);
+            Assert.Equal(content, downloaded);
+        }
+        finally
+        {
+            await DeleteDirectoryTreeIfExistsAsync(client, directoryPath);
         }
     }
 
@@ -142,6 +183,12 @@ public sealed class UpyunClientTests
         }
 
         return value;
+    }
+
+    private static string ComputeMd5Hex(byte[] content)
+    {
+        using var md5 = MD5.Create();
+        return Convert.ToHexString(md5.ComputeHash(content)).ToLowerInvariant();
     }
 
     private async Task DeleteDirectoryTreeIfExistsAsync(UpyunClient client, string path)
@@ -181,5 +228,15 @@ public sealed class UpyunClientTests
             // 兜底清理不参与测试断言，避免掩盖主流程失败原因。
             _output.WriteLine($"递归清理目录失败，已忽略：{path}");
         }
+    }
+
+    private static string CombineRemotePath(string directoryPath, string name)
+    {
+        if (string.IsNullOrEmpty(directoryPath) || directoryPath == "/")
+        {
+            return "/" + name.Trim('/');
+        }
+
+        return directoryPath.TrimEnd('/') + "/" + name.Trim('/');
     }
 }

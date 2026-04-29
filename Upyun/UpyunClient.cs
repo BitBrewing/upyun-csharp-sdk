@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using MimeDetective;
 using Upyun.Models;
 
 namespace Upyun
@@ -27,6 +28,10 @@ namespace Upyun
         private readonly Uri _endpoint;
         private readonly HttpClient _httpClient;
         private readonly bool _disposeHttpClient;
+        private static readonly ContentInspector ContentInspector = new ContentInspectorBuilder
+        {
+            Definitions = MimeDetective.Definitions.Default.All()
+        }.Build();
 
         /// <summary>
         /// 使用独立的 <see cref="HttpClient"/> 初始化 <see cref="UpyunClient"/> 类的新实例。
@@ -102,10 +107,10 @@ namespace Upyun
         /// <param name="contentMd5">可选的 Content-MD5 请求头值。</param>
         /// <param name="headers">额外请求头，例如文件元信息或图片预处理参数。</param>
         /// <param name="cancellationToken">用于取消操作的令牌。</param>
-        /// <returns>表示异步上传操作的任务。</returns>
+        /// <returns>上传后的文件信息。</returns>
         /// <exception cref="ArgumentException">当 <paramref name="localFilePath"/> 为空时抛出。</exception>
         /// <exception cref="UpyunException">当又拍云返回非成功响应时抛出。</exception>
-        public Task UploadFileAsync(
+        public Task<UpyunFile> UploadFileAsync(
             string path,
             string localFilePath,
             string contentType = null,
@@ -131,12 +136,12 @@ namespace Upyun
         /// <param name="metadata">可选的文件元信息，键名会自动添加 x-upyun-meta- 前缀。</param>
         /// <param name="ttl">可选的文件生存时间，单位为天，最大支持 180 天。</param>
         /// <param name="cancellationToken">用于取消操作的令牌。</param>
-        /// <returns>表示异步上传操作的任务。</returns>
+        /// <returns>上传后的文件信息。</returns>
         /// <exception cref="ArgumentNullException">当 <paramref name="content"/> 为 <see langword="null"/> 时抛出。</exception>
         /// <exception cref="ArgumentException">当 <paramref name="metadata"/> 包含 ttl 元信息时抛出。</exception>
         /// <exception cref="ArgumentOutOfRangeException">当 <paramref name="ttl"/> 超出支持范围时抛出。</exception>
         /// <exception cref="UpyunException">当又拍云返回非成功响应时抛出。</exception>
-        public Task UploadFileAsync(
+        public Task<UpyunFile> UploadFileAsync(
             string path,
             byte[] content,
             string contentType = null,
@@ -154,7 +159,7 @@ namespace Upyun
                 path,
                 new ByteArrayContent(content),
                 content.Length,
-                contentType,
+                contentType ?? DetectContentType(content),
                 contentMd5,
                 BuildMetadataHeaders(metadata, ttl),
                 cancellationToken);
@@ -166,16 +171,16 @@ namespace Upyun
         /// <param name="path">服务内的目标文件路径。</param>
         /// <param name="content">要上传的内容流。</param>
         /// <param name="contentLength">要上传的字节数；当流不可定位时必须提供。</param>
-        /// <param name="contentType">可选的文件类型请求头。</param>
+        /// <param name="contentType">可选的文件类型请求头；未提供且流可定位时会根据内容自动识别。</param>
         /// <param name="contentMd5">可选的 Content-MD5 请求头值。</param>
         /// <param name="headers">额外请求头，例如文件元信息或图片预处理参数。</param>
         /// <param name="cancellationToken">用于取消操作的令牌。</param>
-        /// <returns>表示异步上传操作的任务。</returns>
+        /// <returns>上传后的文件信息。</returns>
         /// <exception cref="ArgumentNullException">当 <paramref name="content"/> 为 <see langword="null"/> 时抛出。</exception>
         /// <exception cref="ArgumentException">当 <paramref name="content"/> 不可定位且未提供 <paramref name="contentLength"/> 时抛出。</exception>
         /// <exception cref="ArgumentOutOfRangeException">当 <paramref name="contentLength"/> 为负数时抛出。</exception>
         /// <exception cref="UpyunException">当又拍云返回非成功响应时抛出。</exception>
-        public Task UploadFileAsync(
+        public Task<UpyunFile> UploadFileAsync(
             string path,
             Stream content,
             long? contentLength = null,
@@ -190,7 +195,14 @@ namespace Upyun
             }
 
             long length = GetContentLength(content, contentLength);
-            return UploadFileAsync(path, new StreamContent(content), length, contentType, contentMd5, headers, cancellationToken);
+            return UploadFileAsync(
+                path,
+                new StreamContent(content),
+                length,
+                contentType ?? DetectContentType(content),
+                contentMd5,
+                headers,
+                cancellationToken);
         }
 
         /// <summary>
@@ -373,13 +385,7 @@ namespace Upyun
             {
                 await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-                return CreateFileSystemItem(
-                    GetFileName(path),
-                    GetHeaderValue(response, "x-upyun-file-type"),
-                    GetHeaderValue(response, "Content-Type"),
-                    ParseLongHeader(response, "x-upyun-file-size"),
-                    ParseLongHeader(response, "x-upyun-file-date"),
-                    GetHeaderValue(response, "Content-Md5"));
+                return CreateFileSystemItem(path, response);
             }
         }
 
@@ -475,6 +481,59 @@ namespace Upyun
                 return usage;
             }
         }
+        
+        /// <summary>
+        /// 生成签名：参见 https://help.upyun.com/knowledge-base/form_api/#e7adbee5908de8aea4e8af81efbc88e697a7efbc89
+        /// </summary>
+        /// <param name="method">请求方式，如：GET、POST、PUT、HEAD 等</param>
+        /// <param name="date">请求日期时间，GMT 格式字符串 (RFC 1123)，如 Wed, 29 Oct 2014 02:26:58 GMT</param>
+        /// <param name="policy">上传参数的 Base64 编码，详见 Policy 算法：https://help.upyun.com/knowledge-base/object_storage_authorization/#policy</param>
+        /// <returns></returns>
+        public string GenerateFormUploadAuthorization(string method, string date, string policy)
+        {
+            var data = string.Join("&", new string[] { method, "/" + _bucket, date, policy });
+            var sign = ComputeHmacSha1Base64(_passwordMd5, data);
+
+            return "UPYUN " + _operatorName + ":" + sign;
+        }
+
+        /// <summary>
+        /// 生成 Form API 上传所需的上传地址、策略和授权签名。
+        /// </summary>
+        /// <param name="remotePath">文件保存到又拍云后的远程路径。</param>
+        /// <param name="expiration">上传策略的有效时长。</param>
+        /// <returns>Form API 上传所需的授权信息。</returns>
+        /// <exception cref="ArgumentException">当 <paramref name="remotePath"/> 为空时抛出。</exception>
+        /// <exception cref="ArgumentOutOfRangeException">当 <paramref name="expiration"/> 不大于 0 时抛出。</exception>
+        public UpyunFormUploadAuthorization GenerateFormUploadAuthorization(string remotePath, TimeSpan expiration)
+        {
+            if (string.IsNullOrWhiteSpace(remotePath))
+            {
+                throw new ArgumentException("Remote path cannot be empty.", nameof(remotePath));
+            }
+
+            if (expiration <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(expiration), "Expiration must be greater than zero.");
+            }
+
+            var date = DateTime.UtcNow.ToString("R", CultureInfo.InvariantCulture);
+            var policyOptions = new Dictionary<string, object>
+            {
+                { "save-key", NormalizeFormRemotePath(remotePath) },
+                { "bucket", _bucket },
+                { "expiration", DateTimeOffset.UtcNow.Add(expiration).ToUnixTimeSeconds() },
+                { "date", date }
+            };
+            var policy = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(policyOptions)));
+
+            return new UpyunFormUploadAuthorization
+            {
+                UploadUrl = new Uri(_endpoint, EscapePathSegment(_bucket)).ToString(),
+                Policy = policy,
+                Authorization = GenerateFormUploadAuthorization("POST", date, policy)
+            };
+        }
 
         /// <summary>
         /// 释放由当前实例创建并持有的 <see cref="HttpClient"/>。
@@ -487,7 +546,7 @@ namespace Upyun
             }
         }
 
-        private async Task UploadLocalFileAsync(
+        private async Task<UpyunFile> UploadLocalFileAsync(
             string path,
             string localFilePath,
             string contentType,
@@ -497,12 +556,12 @@ namespace Upyun
         {
             using (FileStream stream = File.OpenRead(localFilePath))
             {
-                await UploadFileAsync(path, stream, stream.Length, contentType, contentMd5, headers, cancellationToken)
+                return await UploadFileAsync(path, new StreamContent(stream), stream.Length, contentType, contentMd5, headers, cancellationToken)
                     .ConfigureAwait(false);
             }
         }
 
-        private async Task UploadFileAsync(
+        private async Task<UpyunFile> UploadFileAsync(
             string path,
             HttpContent content,
             long contentLength,
@@ -524,6 +583,7 @@ namespace Upyun
                 contentMd5).ConfigureAwait(false))
             {
                 await EnsureSuccessAsync(response).ConfigureAwait(false);
+                return CreateUploadFileInfo(path, response);
             }
         }
 
@@ -539,7 +599,7 @@ namespace Upyun
                 path,
                 query,
                 0,
-                new ByteArrayContent(new byte[0]),
+                new ByteArrayContent(Array.Empty<byte>()),
                 headers,
                 cancellationToken).ConfigureAwait(false))
             {
@@ -699,6 +759,37 @@ namespace Upyun
             return normalizedKey;
         }
 
+        private static string DetectContentType(byte[] content)
+        {
+            return ContentInspector
+                .Inspect(content)
+                .ByMimeType()
+                .FirstOrDefault()
+                ?.MimeType;
+        }
+
+        private static string DetectContentType(Stream content)
+        {
+            if (!content.CanSeek)
+            {
+                return null;
+            }
+
+            long position = content.Position;
+            try
+            {
+                return ContentInspector
+                    .Inspect(content)
+                    .ByMimeType()
+                    .FirstOrDefault()
+                    ?.MimeType;
+            }
+            finally
+            {
+                content.Position = position;
+            }
+        }
+
         private string BuildAuthorization(string method, string requestPath, string date, long contentLength)
         {
             string signatureSource = string.Join(
@@ -766,6 +857,11 @@ namespace Upyun
 
             int separatorIndex = normalizedPath.LastIndexOf('/');
             return separatorIndex < 0 ? normalizedPath : normalizedPath.Substring(separatorIndex + 1);
+        }
+
+        private static string NormalizeFormRemotePath(string path)
+        {
+            return "/" + NormalizeObjectPath(path);
         }
 
         private static string EncodePath(string path)
@@ -839,6 +935,29 @@ namespace Upyun
                 GetJsonInt64(item, "length"),
                 GetJsonInt64(item, "last_modified"),
                 GetJsonString(item, "etag"));
+        }
+
+        private static UpyunFileSystem CreateFileSystemItem(string path, HttpResponseMessage response)
+        {
+            return CreateFileSystemItem(
+                GetFileName(path),
+                GetHeaderValue(response, "x-upyun-file-type"),
+                GetHeaderValue(response, "Content-Type"),
+                ParseLongHeader(response, "x-upyun-file-size"),
+                ParseLongHeader(response, "x-upyun-file-date"),
+                GetHeaderValue(response, "Content-Md5"));
+        }
+
+        private static UpyunFile CreateUploadFileInfo(string path, HttpResponseMessage response)
+        {
+            UpyunFileSystem fileSystem = CreateFileSystemItem(path, response);
+            UpyunFile file = fileSystem as UpyunFile;
+            if (file == null)
+            {
+                throw new UpyunException("Failed to parse upload file response.");
+            }
+
+            return file;
         }
 
         private static UpyunFileSystem CreateFileSystemItem(
@@ -942,6 +1061,15 @@ namespace Upyun
             {
                 return ToHex(md5.ComputeHash(bytes));
             }
+        }
+        
+        private static string ComputeHmacSha1Base64(string secret, string value)
+        {
+            var hmacsha1 = new HMACSHA1(Encoding.UTF8.GetBytes(secret));
+
+            var dataBuffer = Encoding.UTF8.GetBytes(value);
+            var hashBytes = hmacsha1.ComputeHash(dataBuffer);
+            return Convert.ToBase64String(hashBytes);
         }
 
         private static string ToHex(byte[] bytes)

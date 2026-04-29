@@ -22,4 +22,8 @@
         <None Include="..\README.md" Pack="true" PackagePath="\" />
     </ItemGroup>
 
+    <ItemGroup>
+      <PackageReference Include="Mime-Detective" Version="22.7.21" />
+    </ItemGroup>
+
 </Project>
