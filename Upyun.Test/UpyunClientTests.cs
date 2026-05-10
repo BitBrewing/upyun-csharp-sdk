@@ -11,7 +11,7 @@ namespace Upyun.Test;
 public sealed class UpyunClientTests
 {
     private const string Endpoint = "https://v0.api.upyun.com";
-    private const string TestRoot = "/";
+    private const string TestRoot = "/upyun-sdk-tests";
     private static readonly Lazy<IConfigurationRoot> Secrets = new(CreateConfiguration);
     private readonly ITestOutputHelper _output;
 
