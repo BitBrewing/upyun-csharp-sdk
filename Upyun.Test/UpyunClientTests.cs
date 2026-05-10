@@ -11,6 +11,7 @@ namespace Upyun.Test;
 public sealed class UpyunClientTests
 {
     private const string Endpoint = "https://v0.api.upyun.com";
+    // 测试结束会递归删除该目录及其所有内容，请不要改为根目录。
     private const string TestRoot = "/upyun-sdk-tests";
     private static readonly Lazy<IConfigurationRoot> Secrets = new(CreateConfiguration);
     private readonly ITestOutputHelper _output;
@@ -36,6 +37,9 @@ public sealed class UpyunClientTests
 
         try
         {
+            _output.WriteLine($"正在创建测试根目录：{TestRoot}...");
+            await client.CreateDirectoryAsync(TestRoot);
+
             _output.WriteLine($"正在创建测试目录：{directoryPath}...");
             await client.CreateDirectoryAsync(directoryPath);
 
@@ -109,7 +113,7 @@ public sealed class UpyunClientTests
         }
         finally
         {
-            await DeleteDirectoryTreeIfExistsAsync(client, directoryPath);
+            await DeleteDirectoryTreeIfExistsAsync(client, TestRoot);
         }
     }
 
@@ -128,6 +132,9 @@ public sealed class UpyunClientTests
 
         try
         {
+            _output.WriteLine($"正在创建测试根目录：{TestRoot}...");
+            await client.CreateDirectoryAsync(TestRoot);
+
             using var httpClient = new HttpClient();
             using var form = new MultipartFormDataContent();
             using var fileContent = new ByteArrayContent(content);
@@ -154,7 +161,7 @@ public sealed class UpyunClientTests
         }
         finally
         {
-            await DeleteDirectoryTreeIfExistsAsync(client, directoryPath);
+            await DeleteDirectoryTreeIfExistsAsync(client, TestRoot);
         }
     }
 
@@ -193,6 +200,11 @@ public sealed class UpyunClientTests
 
     private async Task DeleteDirectoryTreeIfExistsAsync(UpyunClient client, string path)
     {
+        if (string.IsNullOrWhiteSpace(path) || path == "/")
+        {
+            throw new InvalidOperationException("拒绝递归清理根目录。");
+        }
+
         try
         {
             _output.WriteLine($"正在递归清理目录：{path}...");
